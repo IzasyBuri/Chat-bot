@@ -1,0 +1,14 @@
+FROM node:22-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY server ./server
+RUN ./node_modules/.bin/esbuild server/index.ts --bundle --packages=external --platform=node --format=esm --outfile=/app/api.mjs
+
+FROM node:22-bookworm-slim
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY --from=build /app/api.mjs ./api.mjs
+USER node
+CMD ["node", "api.mjs"]

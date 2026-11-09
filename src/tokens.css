@@ -1,0 +1,42 @@
+/* Hallmark · shape: app screen · genre: modern-minimal · theme: Coral · posture: restrained · signature: handover inbox · nav: operational sidebar with workspace switch · v2.0.0 */
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V3 · weakest: V, removed generic analytics charts to put handover queue first */
+:root {
+  --color-paper: oklch(97% 0.006 55);
+  --color-paper-2: oklch(95% 0.008 55);
+  --color-paper-3: oklch(91.5% 0.009 55);
+  --color-cotton: oklch(99% 0.004 80);
+  --color-ink: oklch(21% 0.012 38);
+  --color-ink-2: oklch(31% 0.013 40);
+  --color-muted: oklch(48% 0.013 45);
+  --color-faint: oklch(60% 0.01 55);
+  --color-rule: oklch(88% 0.009 55);
+  --color-rule-2: oklch(82% 0.011 55);
+  --color-accent: oklch(74% 0.125 30);
+  --color-accent-2: oklch(54% 0.165 29);
+  --color-focus: oklch(54% 0.17 30);
+  --color-accent-soft: oklch(95% 0.025 30);
+  --color-warm-soft: oklch(95% 0.03 80);
+  --color-warm-ink: oklch(48% 0.09 75);
+  --color-success-soft: oklch(94% 0.026 160);
+  --color-success-ink: oklch(42% 0.085 160);
+  --color-danger: oklch(49% 0.15 25);
+  --color-avatar: oklch(90% 0.027 60);
+  --color-sidebar: oklch(98% 0.006 55);
+  --color-board: oklch(22% 0.011 40);
+  --color-board-type: oklch(96.5% 0.006 70);
+  --color-overlay: oklch(20% 0.01 40 / 0.42);
+  --font-body: 'General Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-body);
+  --space-2xs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 40px;
+  --space-2xl: 64px;
+  --radius-sm: 6px;
+  --radius-card: 10px;
+  --dur-micro: 120ms;
+  --dur-short: 220ms;
+  --ease-out: cubic-bezier(.2,.7,.3,1);
+}

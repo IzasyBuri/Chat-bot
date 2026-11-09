@@ -1,0 +1,3 @@
+# OpenWA is now part of docker-compose.yml so the gateway and webhook API share a private network.
+# Use docker compose up -d --build db api openwa, not this obsolete standalone file.
+services: {}

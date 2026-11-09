@@ -1,0 +1,77 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ruang_sales
+      POSTGRES_USER: ruang_sales
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ruang_sales -d ruang_sales"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      openwa:
+        condition: service_started
+    environment:
+      DATABASE_URL: ${API_DATABASE_URL:?Set API_DATABASE_URL in .env (use db as host)}
+      OPENWA_URL: http://openwa:2785
+      OPENWA_API_KEY: ${OPENWA_API_KEY:?Set OPENWA_API_KEY in .env}
+      OPENWA_WEBHOOK_URL: http://api:3001/api/hooks/openwa
+      OPENWA_WEBHOOK_SECRET: ${OPENWA_WEBHOOK_SECRET:?Set OPENWA_WEBHOOK_SECRET in .env}
+      API_HOST: 0.0.0.0
+      PORT: "3001"
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "127.0.0.1:3001:3001"
+    networks:
+      - default
+      - gateway
+    security_opt:
+      - no-new-privileges:true
+  openwa:
+    image: ghcr.io/rmyndharis/openwa:0.29.1
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "2785"
+      ENGINE_TYPE: baileys
+      DATABASE_TYPE: sqlite
+      DATABASE_SYNCHRONIZE: "false"
+      SESSION_DATA_PATH: /app/data/sessions
+      AUTO_START_SESSIONS: "true"
+      RESOLVE_LID_TO_PHONE: "true"
+      SEND_PACING_ENABLED: "true"
+      SIMULATE_TYPING: "true"
+      SSRF_ALLOWED_HOSTS: api
+    volumes:
+      - openwa_pilot_data:/app/data
+    networks:
+      - gateway
+      - egress
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    stop_grace_period: 75s
+volumes:
+  pgdata:
+  openwa_pilot_data:
+networks:
+  gateway:
+    internal: true
+  egress:
