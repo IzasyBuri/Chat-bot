@@ -4,7 +4,7 @@ import { pool } from './db';
 
 async function main() {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL wajib diisi');
-  const scripts = ['001_initial.sql', '002_pilot_inbox.sql', '003_outbound.sql'];
+  const scripts = ['001_initial.sql', '002_pilot_inbox.sql', '003_outbound.sql', '004_session_verification.sql'];
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

@@ -1,26 +1,20 @@
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import type { Actor } from './auth';
 import { OpenWaError, type GatewayClient } from './openwa-client';
+import { normalizeGatewayPhone, verifyOpenWaSignature, WEBHOOK_SECRET_MIN_LENGTH } from './openwa-contract';
 
 const uuid = z.uuid();
 const sessionLink = z.object({ sessionId: uuid, salesId: uuid }).strict();
 const event = z.object({
   event: z.string(), sessionId: uuid,
   data: z.object({
-    id: z.string().min(1).max(255), from: z.string(), chatId: z.string().min(5).max(255), body: z.string().max(4096),
+    id: z.string().min(1).max(255), from: z.string(), to: z.string().min(5).max(255).optional(), chatId: z.string().min(5).max(255), body: z.string().max(4096),
     type: z.string(), timestamp: z.number().int().positive(), fromMe: z.boolean(), isGroup: z.boolean(), kind: z.string(),
   }).passthrough().optional(),
 }).passthrough();
-
-export function verifyOpenWaSignature(raw: Buffer, signature: string | undefined, secret: string | undefined): boolean {
-  if (!secret || secret.length < 16 || !signature || !/^sha256=[0-9a-f]{64}$/.test(signature)) return false;
-  const received = Buffer.from(signature.slice(7), 'hex');
-  const expected = createHmac('sha256', secret).update(raw).digest();
-  return received.length === expected.length && timingSafeEqual(received, expected);
-}
 
 export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor: (request: FastifyRequest, reply: FastifyReply) => Promise<Actor | null>, gateway: GatewayClient) {
   // A signed webhook is the sole cross-origin POST. Keep exact bytes for HMAC verification.
@@ -37,9 +31,14 @@ export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor
       catch { return reply.code(400).send({ error: 'Payload tidak valid.' }); }
       if (!parsed.success) return reply.code(400).send({ error: 'Payload tidak valid.' });
       const { sessionId, data } = parsed.data;
-      const mapped = await db.query("SELECT w.session_id FROM wa_sessions w JOIN users u ON u.id = w.sales_id WHERE w.session_id = $1 AND u.active AND u.role = 'sales' AND w.verified_at IS NOT NULL", [sessionId]);
+      const mapped = await db.query('SELECT w.session_id, w.verified_phone AS "verifiedPhone" FROM wa_sessions w JOIN users u ON u.id = w.sales_id WHERE w.session_id = $1 AND u.active AND u.role = \'sales\' AND w.verified_at IS NOT NULL', [sessionId]);
       if (!mapped.rowCount) return reply.code(404).send({ error: 'Sesi tidak terdaftar.' });
       if (parsed.data.event !== 'message.received' || !data || data.fromMe || data.isGroup || data.kind !== 'individual' || data.type !== 'text' || data.from !== data.chatId || !/^\d{5,15}@c\.us$/.test(data.chatId)) return { accepted: true, stored: false };
+      const destinationPhone = normalizeGatewayPhone(data.to || '');
+      if (!destinationPhone || destinationPhone !== mapped.rows[0].verifiedPhone) {
+        await db.query('UPDATE wa_sessions SET verified_at = NULL, verified_phone = NULL WHERE session_id = $1', [sessionId]);
+        return { accepted: true, stored: false };
+      }
       if (data.timestamp > Date.now() / 1000 + 3600 || data.timestamp < 946684800) return reply.code(400).send({ error: 'Waktu pesan tidak valid.' });
       const client = await db.connect();
       try {
@@ -60,7 +59,7 @@ export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor
     if (!z.object({ consent: z.literal(true) }).strict().safeParse(request.body).success) return reply.code(400).send({ error: 'Persetujuan risiko nomor wajib diberikan.' });
     const secret = process.env.OPENWA_WEBHOOK_SECRET;
     const url = process.env.OPENWA_WEBHOOK_URL;
-    if (!secret || secret.length < 32 || !url || !(url.startsWith('https://') || url === 'http://api:3001/api/hooks/openwa')) return reply.code(503).send({ error: 'Webhook OpenWA belum dikonfigurasi dengan aman.' });
+    if (!secret || secret.length < WEBHOOK_SECRET_MIN_LENGTH || !url || !(url.startsWith('https://') || url === 'http://api:3001/api/hooks/openwa')) return reply.code(503).send({ error: 'Webhook OpenWA belum dikonfigurasi dengan aman.' });
     const client = await db.connect();
     try {
       await client.query('BEGIN');
@@ -98,8 +97,9 @@ export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor
     const { sessionId, phone } = result.rows[0];
     const live = await gateway.getSession(sessionId);
     if (live.id !== sessionId) throw new OpenWaError(502);
-    const verified = live.status === 'ready' && !!live.phone && live.phone === phone;
-    await db.query('UPDATE wa_sessions SET verified_at = $2 WHERE session_id = $1', [sessionId, verified ? new Date() : null]);
+    const livePhone = live.phone ? normalizeGatewayPhone(live.phone) : null;
+    const verified = live.status === 'ready' && livePhone === phone;
+    await db.query('UPDATE wa_sessions SET verified_at = $2, verified_phone = $3 WHERE session_id = $1', [sessionId, verified ? new Date() : null, verified ? livePhone : null]);
     if (live.status === 'ready' && !verified) return { status: 'phone_mismatch', qrCode: null, verified: false };
     const qr = live.status === 'qr_ready' ? await gateway.getQr(sessionId) : null;
     const qrCode = qr?.qrCode && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(qr.qrCode) ? qr.qrCode : null;

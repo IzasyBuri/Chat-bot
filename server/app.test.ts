@@ -38,6 +38,7 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     await db.query(await readFile(new URL('./migrations/001_initial.sql', import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('./migrations/002_pilot_inbox.sql', import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('./migrations/003_outbound.sql', import.meta.url), 'utf8'));
+    await db.query(await readFile(new URL('./migrations/004_session_verification.sql', import.meta.url), 'utf8'));
     await db.query('TRUNCATE messages, conversations, wa_sessions, audit_logs, sessions, users, branches RESTART IDENTITY CASCADE');
     await db.query("INSERT INTO users (email, password_hash, name, role) VALUES ($1,$2,'Root','super')", ['root@example.com', await hashPassword('strong-password-123')]);
     await app.ready();
@@ -135,7 +136,7 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     expect((await request('POST', '/api/wa-sessions/link', rootCookie, input)).statusCode).toBe(409);
     expect((await request('GET', '/api/wa-sessions', adminCookie)).json().sessions).toEqual([]);
     expect((await request('GET', '/api/wa-sessions', rootCookie)).json().sessions[0]).toMatchObject(input);
-    await db.query('UPDATE wa_sessions SET verified_at = now() WHERE session_id = $1', [pilotSessionId]);
+    await db.query('UPDATE wa_sessions SET verified_at = now(), verified_phone = $2 WHERE session_id = $1', [pilotSessionId, '628111111112']);
   });
 
   const event = (data: object, sessionId = pilotSessionId) => JSON.stringify({ event: 'message.received', sessionId, timestamp: new Date().toISOString(), idempotencyKey: 'key', deliveryId: 'delivery', data });
@@ -155,6 +156,29 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     }
     const count = await db.query('SELECT count(*)::int AS count FROM messages');
     expect(count.rows[0].count).toBe(1);
+  });
+
+  it('drops a signed message for a different destination phone and clears stale verification', async () => {
+    const branch = await db.query("INSERT INTO branches (name) VALUES ('Stale Verification') RETURNING id");
+    const user = await db.query(
+      "INSERT INTO users (name, email, password_hash, role, branch_id, phone) VALUES ('Stale Sales', 'stale@example.com', $1, 'sales', $2, '628155555555') RETURNING id",
+      [await hashPassword('strong-stale-password'), branch.rows[0].id],
+    );
+    const sessionId = '511cd664-06b7-4915-a7d2-59ea0c21ca02';
+    await db.query(
+      'INSERT INTO wa_sessions (session_id, sales_id, verified_at, verified_phone) VALUES ($1, $2, now(), $3)',
+      [sessionId, user.rows[0].id, '628155555555'],
+    );
+    const before = await db.query('SELECT count(*)::int AS count FROM messages');
+
+    const response = await deliver(event({ ...inbound, id: 'stale-phone', to: '628166666666@c.us' }, sessionId));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ accepted: true, stored: false });
+    const after = await db.query('SELECT count(*)::int AS count FROM messages');
+    expect(after.rows[0].count).toBe(before.rows[0].count);
+    const verification = await db.query('SELECT verified_at, verified_phone FROM wa_sessions WHERE session_id = $1', [sessionId]);
+    expect(verification.rows[0]).toEqual({ verified_at: null, verified_phone: null });
   });
 
   it('shows the conversation only within its sales branch and hides guessed IDs', async () => {
