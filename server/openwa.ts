@@ -148,7 +148,18 @@ export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor
     const params = user.role === 'super' ? [id] : [id, user.role === 'admin' ? user.branchId : user.id];
     const exists = await db.query(`SELECT c.id FROM conversations c JOIN wa_sessions w ON w.session_id = c.session_id JOIN users u ON u.id = w.sales_id WHERE c.id = $1 ${scope}`, params);
     if (!exists.rowCount) return reply.code(404).send({ error: 'Percakapan tidak ditemukan.' });
-    const messages = await db.query('SELECT id, body, sent_at AS "sentAt", direction, status FROM messages WHERE conversation_id = $1 ORDER BY sent_at, id LIMIT 200', [id]);
+    const messages = await db.query(
+      `SELECT id, body, sent_at AS "sentAt", direction, status
+       FROM (
+         SELECT id, body, sent_at, direction, status
+         FROM messages
+         WHERE conversation_id = $1
+         ORDER BY sent_at DESC, id DESC
+         LIMIT 200
+       ) AS recent
+       ORDER BY sent_at, id`,
+      [id],
+    );
     return { messages: messages.rows };
   });
   app.patch('/api/conversations/:id/pin', async (request, reply) => {

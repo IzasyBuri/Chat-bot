@@ -171,6 +171,37 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     expect((await request('GET', '/api/conversations', '')).statusCode).toBe(401);
   });
 
+  it('returns the newest 200 messages in chronological display order', async () => {
+    const branch = await db.query("INSERT INTO branches (name) VALUES ('Window Test') RETURNING id");
+    const password = 'strong-window-password';
+    const sales = await db.query(
+      "INSERT INTO users (name, email, password_hash, role, branch_id, phone) VALUES ('Window Sales', 'window@example.com', $1, 'sales', $2, '628177777777') RETURNING id",
+      [await hashPassword(password), branch.rows[0].id],
+    );
+    const sessionId = '411cd664-06b7-4915-a7d2-59ea0c21ca01';
+    await db.query('INSERT INTO wa_sessions (session_id, sales_id, verified_at) VALUES ($1, $2, now())', [sessionId, sales.rows[0].id]);
+    const login = await pilotLogin('window@example.com', password);
+    const cookie = String(login.headers['set-cookie']).split(';')[0];
+    const conversation = await db.query(
+      "INSERT INTO conversations (session_id, chat_id) VALUES ($1, '628188888888@c.us') RETURNING id",
+      [sessionId],
+    );
+    await db.query(
+      `INSERT INTO messages (id, conversation_id, gateway_id, body, sent_at)
+       SELECT ('00000000-0000-0000-0000-' || lpad(series::text, 12, '0'))::uuid,
+              $1, 'window-' || series, 'message-' || lpad(series::text, 3, '0'),
+              '2026-11-10T00:00:00Z'::timestamptz
+       FROM generate_series(1, 201) AS series`,
+      [conversation.rows[0].id],
+    );
+
+    const response = await request('GET', `/api/conversations/${conversation.rows[0].id}/messages`, cookie);
+    expect(response.statusCode).toBe(200);
+    expect(response.json().messages).toHaveLength(200);
+    expect(response.json().messages[0].body).toBe('message-002');
+    expect(response.json().messages.at(-1).body).toBe('message-201');
+  });
+
   it('lets a consenting sales account provision its own QR and checks the linked phone', async () => {
     const sales = await request('POST', '/api/users', adminCookie, { name: 'Pilot Jakarta', email: 'pilot@example.com', password: 'strong-password-456', role: 'sales', branchId: b1, phone: '628111111115' });
     expect(sales.statusCode).toBe(201);
