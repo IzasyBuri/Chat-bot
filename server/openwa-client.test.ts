@@ -17,6 +17,21 @@ describe('OpenWA HTTP client', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'POST', headers: { 'X-API-Key': 'secret-key', 'Content-Type': 'application/json', 'Idempotency-Key': 'req-1' }, body: JSON.stringify({ chatId: '628199999999@c.us', text: 'Halo', linkPreview: false }) });
   });
+  it('finds a deterministic session name and deletes a partial session', async () => {
+    const session = { id: '511cd664-06b7-4915-a7d2-59ea0c21ca01', name: 'sales-user-1', status: 'created', phone: null, engineLoaded: false };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [session] })
+      .mockResolvedValueOnce({ ok: true, status: 204, json: async () => { throw new Error('204 has no body'); } });
+    const client = new OpenWaClient('http://127.0.0.1:2785', 'secret-key', fetcher);
+
+    expect(await client.findSessionByName('sales-user-1')).toEqual(session);
+    await expect(client.deleteSession(session.id)).resolves.toBeUndefined();
+    expect(fetcher.mock.calls[0][0]).toBe('http://127.0.0.1:2785/api/sessions?name=sales-user-1');
+    expect(fetcher.mock.calls[1]).toEqual([
+      'http://127.0.0.1:2785/api/sessions/511cd664-06b7-4915-a7d2-59ea0c21ca01',
+      expect.objectContaining({ method: 'DELETE' }),
+    ]);
+  });
   it('rejects missing credentials and upstream errors without exposing API key', async () => {
     const client = new OpenWaClient('http://127.0.0.1:2785', '', vi.fn());
     await expect(client.getSession('511cd664-06b7-4915-a7d2-59ea0c21ca01')).rejects.toMatchObject({ status: 503 });

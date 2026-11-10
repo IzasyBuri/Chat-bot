@@ -6,7 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { hashPassword } from './auth';
 import { buildServer } from './app';
-import type { GatewayClient } from './openwa-client';
+import { OpenWaError, type GatewayClient } from './openwa-client';
 import { reapExpiredConversations } from './retention';
 
 const url = process.env.TEST_DATABASE_URL;
@@ -22,6 +22,8 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     addWebhook: vi.fn(async () => ({ id: 'webhook-1' })),
     sendText: vi.fn(async () => ({ messageId: 'wa-out-1', timestamp: 1794200000 })),
     logoutSession: vi.fn(async () => {}),
+    findSessionByName: vi.fn(async () => null),
+    deleteSession: vi.fn(async () => {}),
   };
   let app: FastifyInstance;
   let rootCookie = '';
@@ -39,6 +41,7 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     await db.query(await readFile(new URL('./migrations/002_pilot_inbox.sql', import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('./migrations/003_outbound.sql', import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('./migrations/004_session_verification.sql', import.meta.url), 'utf8'));
+    await db.query(await readFile(new URL('./migrations/005_session_provisioning.sql', import.meta.url), 'utf8'));
     await db.query('TRUNCATE messages, conversations, wa_sessions, audit_logs, sessions, users, branches RESTART IDENTITY CASCADE');
     await db.query("INSERT INTO users (email, password_hash, name, role) VALUES ($1,$2,'Root','super')", ['root@example.com', await hashPassword('strong-password-123')]);
     await app.ready();
@@ -47,6 +50,16 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
   const request = (method: 'GET' | 'POST' | 'PATCH', path: string, cookie = '', payload?: object, headers: Record<string,string> = {}) =>
     app.inject({ method, url: path, headers: { ...(method !== 'GET' ? { origin: 'http://localhost:5173' } : {}), ...(cookie ? { cookie } : {}), ...headers }, payload });
   const pilotLogin = (email: string, password: string) => app.inject({ method: 'POST', url: '/api/auth/login', remoteAddress: '127.0.0.9', headers: { origin: 'http://localhost:5173' }, payload: { email, password } });
+  const createSalesFixture = async (key: string, phone: string, remoteAddress: string) => {
+    const branch = await db.query('INSERT INTO branches (name) VALUES ($1) RETURNING id', [`${key} Branch`]);
+    const password = `strong-${key}-password`;
+    const user = await db.query(
+      "INSERT INTO users (name, email, password_hash, role, branch_id, phone) VALUES ($1, $2, $3, 'sales', $4, $5) RETURNING id",
+      [`${key} Sales`, `${key}@example.com`, await hashPassword(password), branch.rows[0].id, phone],
+    );
+    const login = await app.inject({ method: 'POST', url: '/api/auth/login', remoteAddress, headers: { origin: 'http://localhost:5173' }, payload: { email: `${key}@example.com`, password } });
+    return { salesId: user.rows[0].id as string, cookie: String(login.headers['set-cookie']).split(';')[0] };
+  };
 
   it('rejects unauthenticated requests and uses generic login errors', async () => {
     expect((await request('GET', '/api/users')).statusCode).toBe(401);
@@ -243,7 +256,61 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     expect((await request('GET', '/api/wa/connection', cookie)).json()).toMatchObject({ status: 'phone_mismatch', verified: false });
     vi.mocked(gateway.getSession).mockResolvedValueOnce({ id: connected.json().sessionId, status: 'ready', phone: '628111111115', engineLoaded: true });
     expect((await request('GET', '/api/wa/connection', cookie)).json()).toMatchObject({ status: 'ready', verified: true });
+    expect((await request('POST', '/api/wa/disconnect', cookie, {})).statusCode).toBe(204);
+    const disconnected = await db.query('SELECT verified_at, verified_phone FROM wa_sessions WHERE sales_id = $1', [sales.json().user.id]);
+    expect(disconnected.rows[0]).toEqual({ verified_at: null, verified_phone: null });
     process.env.OPENWA_WEBHOOK_URL = 'https://example.test/api/hooks/openwa';
+  });
+
+  it('does not hold a database transaction while calling the gateway', async () => {
+    const { cookie } = await createSalesFixture('transaction', '628111111116', '127.0.0.16');
+    vi.mocked(gateway.createSession).mockImplementationOnce(async () => {
+      const transactions = await db.query("SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname = current_database() AND usename = current_user AND state = 'idle in transaction'");
+      expect(transactions.rows[0].count).toBe(0);
+      return { id: '611cd664-06b7-4915-a7d2-59ea0c21ca01', status: 'created', phone: null, engineLoaded: false };
+    });
+
+    const response = await request('POST', '/api/wa/connect', cookie, { consent: true });
+    expect(response.statusCode).toBe(201);
+  });
+
+  it('compensates a partial provisioning failure and allows a retry', async () => {
+    const { salesId, cookie } = await createSalesFixture('retry', '628111111117', '127.0.0.17');
+    const failedSessionId = '711cd664-06b7-4915-a7d2-59ea0c21ca01';
+    vi.mocked(gateway.createSession).mockResolvedValueOnce({ id: failedSessionId, status: 'created', phone: null, engineLoaded: false });
+    vi.mocked(gateway.addWebhook).mockRejectedValueOnce(new OpenWaError(502));
+
+    expect((await request('POST', '/api/wa/connect', cookie, { consent: true })).statusCode).toBe(502);
+    expect(gateway.deleteSession).toHaveBeenCalledWith(failedSessionId);
+    expect((await db.query('SELECT count(*)::int AS count FROM wa_sessions WHERE sales_id = $1', [salesId])).rows[0].count).toBe(0);
+    expect((await db.query('SELECT state FROM wa_session_provisions WHERE sales_id = $1', [salesId])).rows[0].state).toBe('failed');
+
+    vi.mocked(gateway.createSession).mockResolvedValueOnce({ id: '811cd664-06b7-4915-a7d2-59ea0c21ca01', status: 'created', phone: null, engineLoaded: false });
+    expect((await request('POST', '/api/wa/connect', cookie, { consent: true })).statusCode).toBe(201);
+    expect((await db.query('SELECT state FROM wa_session_provisions WHERE sales_id = $1', [salesId])).rows[0].state).toBe('active');
+  });
+
+  it('deletes a gateway session that returns an invalid identifier', async () => {
+    const { cookie } = await createSalesFixture('invalid-session', '628111111119', '127.0.0.19');
+    vi.mocked(gateway.createSession).mockResolvedValueOnce({ id: 'invalid-id', status: 'created', phone: null, engineLoaded: false });
+
+    expect((await request('POST', '/api/wa/connect', cookie, { consent: true })).statusCode).toBe(502);
+    expect(gateway.deleteSession).toHaveBeenCalledWith('invalid-id');
+  });
+
+  it('creates one gateway session for concurrent connect requests', async () => {
+    const { salesId, cookie } = await createSalesFixture('concurrent', '628111111118', '127.0.0.18');
+    const callsBefore = vi.mocked(gateway.createSession).mock.calls.length;
+    vi.mocked(gateway.createSession).mockResolvedValueOnce({ id: '911cd664-06b7-4915-a7d2-59ea0c21ca01', status: 'created', phone: null, engineLoaded: false });
+
+    const responses = await Promise.all([
+      request('POST', '/api/wa/connect', cookie, { consent: true }),
+      request('POST', '/api/wa/connect', cookie, { consent: true }),
+    ]);
+
+    expect(responses.map(response => response.statusCode).sort()).toEqual([200, 201]);
+    expect(vi.mocked(gateway.createSession).mock.calls.length - callsBefore).toBe(1);
+    expect((await db.query('SELECT count(*)::int AS count FROM wa_sessions WHERE sales_id = $1', [salesId])).rows[0].count).toBe(1);
   });
 
   it('allows only the owner to send, records accepted (not delivered), and avoids retry on failure', async () => {

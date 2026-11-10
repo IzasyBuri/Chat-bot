@@ -1,4 +1,4 @@
-export interface GatewaySession { id: string; status: string; phone: string | null; engineLoaded: boolean }
+export interface GatewaySession { id: string; name?: string; status: string; phone: string | null; engineLoaded: boolean }
 export interface GatewayQr { qrCode: string | null; status: string }
 export interface GatewaySend { messageId: string; timestamp: number }
 export interface GatewayClient {
@@ -9,6 +9,8 @@ export interface GatewayClient {
   addWebhook(id: string, url: string, secret: string): Promise<{ id: string }>;
   sendText(id: string, chatId: string, text: string, idempotencyKey: string): Promise<GatewaySend>;
   logoutSession(id: string): Promise<void>;
+  findSessionByName(name: string): Promise<GatewaySession | null>;
+  deleteSession(id: string): Promise<void>;
 }
 export class OpenWaError extends Error {
   constructor(public readonly status: number, message = 'Gateway WhatsApp tidak tersedia.') { super(message); }
@@ -19,7 +21,7 @@ export class OpenWaClient implements GatewayClient {
     private readonly key = process.env.OPENWA_API_KEY || '',
     private readonly fetcher: typeof fetch = fetch,
   ) {}
-  private async request<T>(method: 'GET' | 'POST', path: string, body?: object, requestId?: string): Promise<T> {
+  private async request<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: object, requestId?: string): Promise<T> {
     if (!this.key) throw new OpenWaError(503, 'API key OpenWA belum dikonfigurasi.');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), path.endsWith('/start') ? 45000 : 12000);
@@ -30,7 +32,7 @@ export class OpenWaClient implements GatewayClient {
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
       if (!response.ok) throw new OpenWaError(response.status >= 500 ? 502 : response.status);
-      return await response.json() as T;
+      return response.status === 204 ? undefined as T : await response.json() as T;
     } catch (error) { if (error instanceof OpenWaError) throw error; throw new OpenWaError(502); }
     finally { clearTimeout(timeout); }
   }
@@ -41,4 +43,9 @@ export class OpenWaClient implements GatewayClient {
   addWebhook(id: string, url: string, secret: string) { return this.request<{ id: string }>('POST', `sessions/${encodeURIComponent(id)}/webhooks`, { url, events: ['message.received'], secret }); }
   sendText(id: string, chatId: string, text: string, idempotencyKey: string) { return this.request<GatewaySend>('POST', `sessions/${encodeURIComponent(id)}/messages/send-text`, { chatId, text, linkPreview: false }, idempotencyKey); }
   async logoutSession(id: string) { await this.request<unknown>('POST', `sessions/${encodeURIComponent(id)}/logout`); }
+  async findSessionByName(name: string) {
+    const sessions = await this.request<GatewaySession[]>('GET', `sessions?name=${encodeURIComponent(name)}`);
+    return sessions[0] ?? null;
+  }
+  async deleteSession(id: string) { await this.request<void>('DELETE', `sessions/${encodeURIComponent(id)}`); }
 }

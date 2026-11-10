@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { Actor } from './auth';
 import { OpenWaError, type GatewayClient } from './openwa-client';
 import { normalizeGatewayPhone, verifyOpenWaSignature, WEBHOOK_SECRET_MIN_LENGTH } from './openwa-contract';
+import { provisionSession } from './openwa-provisioning';
 
 const uuid = z.uuid();
 const sessionLink = z.object({ sessionId: uuid, salesId: uuid }).strict();
@@ -60,33 +61,8 @@ export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor
     const secret = process.env.OPENWA_WEBHOOK_SECRET;
     const url = process.env.OPENWA_WEBHOOK_URL;
     if (!secret || secret.length < WEBHOOK_SECRET_MIN_LENGTH || !url || !(url.startsWith('https://') || url === 'http://api:3001/api/hooks/openwa')) return reply.code(503).send({ error: 'Webhook OpenWA belum dikonfigurasi dengan aman.' });
-    const client = await db.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [user.id]);
-      const existing = await client.query('SELECT session_id AS "sessionId", webhook_id AS "webhookId" FROM wa_sessions WHERE sales_id = $1', [user.id]);
-      let sessionId: string;
-      let fresh = false;
-      if (existing.rowCount) sessionId = existing.rows[0].sessionId;
-      else {
-        const session = await gateway.createSession(`sales-${user.id}`);
-        if (!uuid.safeParse(session.id).success) throw new OpenWaError(502);
-        sessionId = session.id;
-        fresh = true;
-        await client.query('INSERT INTO wa_sessions (session_id, sales_id, consented_at) VALUES ($1,$2,now())', [sessionId, user.id]);
-      }
-      if (!existing.rows[0]?.webhookId) {
-        const webhook = await gateway.addWebhook(sessionId, url, secret);
-        if (!webhook?.id) throw new OpenWaError(502);
-        await client.query('UPDATE wa_sessions SET webhook_id = $2 WHERE session_id = $1', [sessionId, webhook.id]);
-      }
-      const live = await gateway.getSession(sessionId);
-      if (!live.engineLoaded) await gateway.startSession(sessionId);
-      await client.query('INSERT INTO audit_logs (actor_id, action, target_id) VALUES ($1,$2,$3)', [user.id, 'wa_session.connect', user.id]);
-      await client.query('COMMIT');
-      return reply.code(fresh ? 201 : 200).send({ sessionId });
-    } catch (error) { await client.query('ROLLBACK'); throw error; }
-    finally { client.release(); }
+    const result = await provisionSession(db, gateway, { salesId: user.id, webhookUrl: url, webhookSecret: secret });
+    return reply.code(result.fresh ? 201 : 200).send({ sessionId: result.sessionId });
   });
 
   app.get('/api/wa/connection', async (request, reply) => {
@@ -112,7 +88,7 @@ export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor
     const row = await db.query('SELECT session_id AS "sessionId" FROM wa_sessions WHERE sales_id = $1', [user.id]);
     if (!row.rowCount) return reply.code(404).send({ error: 'Sesi tidak ditemukan.' });
     await gateway.logoutSession(row.rows[0].sessionId);
-    await db.query('UPDATE wa_sessions SET verified_at = NULL WHERE sales_id = $1', [user.id]);
+    await db.query('UPDATE wa_sessions SET verified_at = NULL, verified_phone = NULL WHERE sales_id = $1', [user.id]);
     await db.query('INSERT INTO audit_logs (actor_id, action, target_id) VALUES ($1,$2,$3)', [user.id, 'wa_session.disconnect', user.id]);
     return reply.code(204).send();
   });
