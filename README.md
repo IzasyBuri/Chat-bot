@@ -30,6 +30,10 @@ Untuk pengembangan API tanpa container, `npm run dev:api` masih bind `127.0.0.1`
 
 Checklist manual dengan nomor pilot berizin: (1) QR muncul; (2) nomor terverifikasi cocok, nomor salah terblokir; (3) pesan masuk tampil hanya di sales/cabang berwenang; (4) balasan manual diterima di telepon penerima dan statusnya tidak disalahartikan; (5) webhook ulang tidak menduplikasi; (6) logout dan penghapusan tautan pada ponsel; (7) restart gateway lalu sesi pulih atau QR muncul kembali; (8) pin/retensi dan backup/pemulihan di lingkungan terpisah. Sampai checklist ini dilakukan, **pengiriman nyata, pemulihan sesi, dan keamanan nomor belum tervalidasi secara langsung**.
 
+## CI
+
+`.github/workflows/ci.yml` menjalankan tiga job pada setiap PR dan push ke `main`: `quality` (lint, typecheck, build), `integration` (suite penuh dengan PostgreSQL 16 service, menegaskan `numPendingTests == 0` supaya tes integrasi yang ter-skip diam-diam gagal), dan `security` (`npm audit --audit-level=high`). Aktifkan branch protection pada `main` dan wajibkan ketiga status check ini (`quality`, `integration`, `security`) lulus sebelum merge. Dependabot (`.github/dependabot.yml`) memeriksa update npm dan GitHub Actions mingguan.
+
 ## Demo terpisah
 
 Tanpa `VITE_LIVE_API=1`, frontend lama memakai `localStorage` untuk data contoh; tidak memakai autentikasi API dan **bukan** inbox WhatsApp. Jangan masukkan data pelanggan nyata di mode demo.

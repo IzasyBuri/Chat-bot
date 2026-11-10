@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ruang_sales_test
+          POSTGRES_USER: ci_user
+          POSTGRES_PASSWORD: ci-password-not-a-secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://ci_user:ci-password-not-a-secret@127.0.0.1:5432/ruang_sales_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+          cache: 'npm'
+      - run: npm ci
+      # Prove every integration test actually ran: the JSON reporter's numPendingTests
+      # must be zero, so a missing/unreachable TEST_DATABASE_URL (which vitest.skipIf
+      # turns into a skip, not a failure) cannot pass CI silently.
+      - name: Run full suite and assert nothing was skipped
+        run: |
+          npx vitest run --reporter=json --outputFile=ci-report.json
+          node -e "
+            const r = require('./ci-report.json');
+            if (r.numPendingTests > 0 || r.numTotalTests === 0) {
+              console.error('Integration tests were skipped or did not run:', JSON.stringify(r, null, 2));
+              process.exit(1);
+            }
+            console.log(r.numTotalTests + ' tests ran, 0 skipped.');
+          "
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm audit --audit-level=high
