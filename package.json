@@ -22,7 +22,7 @@
     "argon2": "^0.44.0",
     "dotenv": "^16.6.1",
     "fastify": "^5.12.8",
-    "lucide-react": "^0.468.0",
+    "lucide-react": "^1.70.0",
     "pg": "^8.23.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
