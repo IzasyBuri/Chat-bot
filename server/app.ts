@@ -34,7 +34,7 @@ export async function buildServer(
 ) {
   gateway ??= new OpenWaClient(config.gatewayUrl);
   const cookieOptions = { path: '/api', httpOnly: true, sameSite: 'strict' as const, secure: config.cookieSecure, maxAge: 7 * 24 * 60 * 60 };
-  const app = Fastify({ logger, bodyLimit: 32 * 1024 });
+  const app = Fastify({ logger, bodyLimit: 32 * 1024, trustProxy: config.trustProxy });
   await app.register(cookie);
   await app.register(helmet, { frameguard: { action: 'deny' } });
   await app.register(rateLimit, { global: true, max: 1000, timeWindow: '1 minute' });

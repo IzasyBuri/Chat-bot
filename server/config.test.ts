@@ -36,4 +36,9 @@ describe('runtime configuration', () => {
     expect(loadConfig({ OPENWA_WEBHOOK_URL: 'https://pilot.example/api/hooks/openwa' }).webhookUrl).toBe('https://pilot.example/api/hooks/openwa');
     expect(loadConfig({}).webhookUrl).toBe('');
   });
+  it('trusts forwarding headers only for explicitly configured proxies', () => {
+    expect(loadConfig({}).trustProxy).toBe(false);
+    expect(loadConfig({ TRUST_PROXY: 'true' }).trustProxy).toBe(true);
+    expect(loadConfig({ TRUST_PROXY: '127.0.0.1, 172.16.0.0/12' }).trustProxy).toEqual(['127.0.0.1', '172.16.0.0/12']);
+  });
 });

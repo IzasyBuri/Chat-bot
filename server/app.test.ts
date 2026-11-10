@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { hashPassword } from './auth';
 import { buildServer } from './app';
+import { loadConfig } from './config';
 import { OpenWaError, type GatewayClient } from './openwa-client';
 import { reapExpiredConversations } from './retention';
 import { reapExpiredSessions } from './auth';
@@ -43,6 +44,7 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     await db.query(await readFile(new URL('./migrations/003_outbound.sql', import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('./migrations/004_session_verification.sql', import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('./migrations/005_session_provisioning.sql', import.meta.url), 'utf8'));
+    await db.query(await readFile(new URL('./migrations/006_session_identity.sql', import.meta.url), 'utf8'));
     await db.query('TRUNCATE messages, conversations, wa_sessions, audit_logs, sessions, users, branches RESTART IDENTITY CASCADE');
     await db.query("INSERT INTO users (email, password_hash, name, role) VALUES ($1,$2,'Root','super')", ['root@example.com', await hashPassword('strong-password-123')]);
     await app.ready();
@@ -326,6 +328,111 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     expect(responses.map(response => response.statusCode).sort()).toEqual([200, 201]);
     expect(vi.mocked(gateway.createSession).mock.calls.length - callsBefore).toBe(1);
     expect((await db.query('SELECT count(*)::int AS count FROM wa_sessions WHERE sales_id = $1', [salesId])).rows[0].count).toBe(1);
+  });
+
+  it('restarts a logged-out gateway session when the owner reconnects', async () => {
+    const { cookie } = await createSalesFixture('reconnect', '628111111120', '127.0.0.20');
+    vi.mocked(gateway.createSession).mockResolvedValueOnce({ id: 'a11cd664-06b7-4915-a7d2-59ea0c21ca01', status: 'created', phone: null, engineLoaded: false });
+    const first = await request('POST', '/api/wa/connect', cookie, { consent: true });
+    expect(first.statusCode).toBe(201);
+    const sessionId = first.json().sessionId;
+    expect((await request('POST', '/api/wa/disconnect', cookie, {})).statusCode).toBe(204);
+
+    // A logged-out session still exists at the gateway but its engine is stopped.
+    vi.mocked(gateway.getSession).mockResolvedValueOnce({ id: sessionId, status: 'disconnected', phone: null, engineLoaded: false });
+    const startsBefore = vi.mocked(gateway.startSession).mock.calls.length;
+    const second = await request('POST', '/api/wa/connect', cookie, { consent: true });
+
+    expect(second.statusCode).toBe(200);
+    expect(second.json().sessionId).toBe(sessionId);
+    expect(vi.mocked(gateway.startSession).mock.calls.length - startsBefore).toBe(1);
+    expect(vi.mocked(gateway.startSession)).toHaveBeenCalledWith(sessionId);
+  });
+
+  it('replaces a gateway session that no longer exists and keeps conversation history', async () => {
+    const { salesId, cookie } = await createSalesFixture('missing-session', '628111111121', '127.0.0.21');
+    const oldSessionId = 'b11cd664-06b7-4915-a7d2-59ea0c21ca01';
+    const newSessionId = 'b22cd664-06b7-4915-a7d2-59ea0c21ca01';
+    vi.mocked(gateway.createSession).mockResolvedValueOnce({ id: oldSessionId, status: 'created', phone: null, engineLoaded: false });
+    expect((await request('POST', '/api/wa/connect', cookie, { consent: true })).statusCode).toBe(201);
+    await db.query("INSERT INTO conversations (session_id, chat_id) VALUES ($1, '628122222222@c.us')", [oldSessionId]);
+
+    vi.mocked(gateway.getSession).mockRejectedValueOnce(new OpenWaError(404));
+    vi.mocked(gateway.findSessionByName).mockResolvedValueOnce(null);
+    vi.mocked(gateway.createSession).mockResolvedValueOnce({ id: newSessionId, status: 'created', phone: null, engineLoaded: false });
+    const reconnected = await request('POST', '/api/wa/connect', cookie, { consent: true });
+
+    expect(reconnected.statusCode).toBe(200);
+    expect(reconnected.json().sessionId).toBe(newSessionId);
+    expect((await db.query('SELECT session_id FROM wa_sessions WHERE sales_id = $1', [salesId])).rows[0].session_id).toBe(newSessionId);
+    expect((await db.query("SELECT session_id FROM conversations WHERE chat_id = '628122222222@c.us'")).rows[0].session_id).toBe(newSessionId);
+  });
+
+  it('keeps serving health checks while provisioning waits on the gateway', async () => {
+    const smallPool = new pg.Pool({ connectionString: url, max: 2 });
+    const smallApp = await buildServer(smallPool, gateway, undefined, false);
+    await smallApp.ready();
+    let release = () => {};
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    let markA = () => {};
+    let markB = () => {};
+    const aStarted = new Promise<void>(resolve => { markA = resolve; });
+    const bStarted = new Promise<void>(resolve => { markB = resolve; });
+    try {
+      const a = await createSalesFixture('pool-a', '628111111122', '127.0.0.22');
+      const b = await createSalesFixture('pool-b', '628111111123', '127.0.0.23');
+      vi.mocked(gateway.createSession).mockImplementationOnce(async () => {
+        markA();
+        await wait;
+        return { id: 'c11cd664-06b7-4915-a7d2-59ea0c21ca01', status: 'created', phone: null, engineLoaded: false };
+      });
+      vi.mocked(gateway.createSession).mockImplementationOnce(async () => {
+        markB();
+        await wait;
+        return { id: 'd11cd664-06b7-4915-a7d2-59ea0c21ca01', status: 'created', phone: null, engineLoaded: false };
+      });
+      const connectA = smallApp.inject({ method: 'POST', url: '/api/wa/connect', headers: { origin: 'http://localhost:5173', cookie: a.cookie }, payload: { consent: true } });
+      const connectB = smallApp.inject({ method: 'POST', url: '/api/wa/connect', headers: { origin: 'http://localhost:5173', cookie: b.cookie }, payload: { consent: true } });
+      await Promise.all([aStarted, bStarted]);
+
+      // Both gateway calls are parked. A blocked pool would stall this health
+      // check until the gateway answers; the API must stay responsive.
+      const health = await Promise.race([
+        smallApp.inject({ method: 'GET', url: '/api/health' }).then(response => response.statusCode),
+        new Promise<number>(resolve => setTimeout(() => resolve(0), 750)),
+      ]);
+      expect(health).toBe(200);
+
+      release();
+      await Promise.all([connectA, connectB]);
+    } finally {
+      release();
+      await smallApp.close();
+      await smallPool.end();
+    }
+  });
+
+  it('keys rate limits on the forwarded client only when the proxy is trusted', async () => {
+    const attempts = async (app: FastifyInstance) => {
+      const results: number[] = [];
+      for (let index = 0; index < 12; index++) {
+        const response = await app.inject({
+          method: 'POST', url: '/api/auth/login', remoteAddress: '127.0.0.1',
+          headers: { origin: 'http://localhost:5173', 'x-forwarded-for': `203.0.113.${index}` },
+          payload: { email: 'missing@example.com', password: 'incorrect' },
+        });
+        results.push(response.statusCode);
+      }
+      return results;
+    };
+
+    const trusted = await buildServer(db, gateway, loadConfig({ APP_ORIGIN: 'http://localhost:5173', TRUST_PROXY: '127.0.0.1' }), false);
+    await trusted.ready();
+    try { expect(await attempts(trusted)).not.toContain(429); } finally { await trusted.close(); }
+
+    const untrusted = await buildServer(db, gateway, loadConfig({ APP_ORIGIN: 'http://localhost:5173' }), false);
+    await untrusted.ready();
+    try { expect(await attempts(untrusted)).toContain(429); } finally { await untrusted.close(); }
   });
 
   it('allows only the owner to send, records accepted (not delivered), and avoids retry on failure', async () => {

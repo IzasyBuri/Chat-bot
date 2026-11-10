@@ -35,6 +35,7 @@ services:
       PORT: "3001"
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-127.0.0.1,172.16.0.0/12}
     ports:
       - "127.0.0.1:3001:3001"
     networks:

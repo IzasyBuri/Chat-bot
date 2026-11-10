@@ -87,7 +87,12 @@ export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor
     if (user.role !== 'sales') return reply.code(403).send({ error: 'Akses ditolak.' });
     const row = await db.query('SELECT session_id AS "sessionId" FROM wa_sessions WHERE sales_id = $1', [user.id]);
     if (!row.rowCount) return reply.code(404).send({ error: 'Sesi tidak ditemukan.' });
-    await gateway.logoutSession(row.rows[0].sessionId);
+    try { await gateway.logoutSession(row.rows[0].sessionId); }
+    catch (error) {
+      // A session already gone at the gateway must still be clearable locally,
+      // otherwise the account can never pair again.
+      if (!(error instanceof OpenWaError) || error.status !== 404) throw error;
+    }
     await db.query('UPDATE wa_sessions SET verified_at = NULL, verified_phone = NULL WHERE sales_id = $1', [user.id]);
     await db.query('INSERT INTO audit_logs (actor_id, action, target_id) VALUES ($1,$2,$3)', [user.id, 'wa_session.disconnect', user.id]);
     return reply.code(204).send();
