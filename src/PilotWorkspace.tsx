@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { apiRequest, ApiError } from './api';
 import PilotConnection, { type PilotConnectionState } from './PilotConnection';
 import PilotInbox, { type PilotConversation, type PilotMessage } from './PilotInbox';
@@ -10,17 +10,17 @@ export default function PilotWorkspace({ role, conversations, messages, selected
   const [connection, setConnection] = useState<PilotConnectionState>({ status: 'memeriksa', qrCode: null, verified: false });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const poll = async () => {
+  const poll = useCallback(async () => {
     if (role !== 'sales') return;
     try { setConnection(await apiRequest<PilotConnectionState>('/api/wa/connection')); }
     catch (e) { setError(e instanceof ApiError ? e.message : 'Tidak dapat menghubungi server.'); }
-  };
+  }, [role]);
   useEffect(() => {
     if (role !== 'sales') return;
-    void poll();
+    const initial = setTimeout(() => void poll(), 0);
     const timer = setInterval(() => void poll(), 4000);
-    return () => clearInterval(timer);
-  }, [role]);
+    return () => { clearTimeout(initial); clearInterval(timer); };
+  }, [role, poll]);
   const connect = async () => {
     if (busy) return;
     setBusy(true); setError('');

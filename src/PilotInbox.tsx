@@ -1,7 +1,6 @@
 import { useState, type FormEvent } from 'react';
 export interface PilotConversation { id: string; chatId: string; salesName: string; lastMessageAt: string; pinned?: boolean }
 export interface PilotMessage { id: string; body: string; sentAt: string; direction: 'inbound' | 'outbound'; status?: string }
-export const emptyPilotInbox = () => ({ conversations: [] as PilotConversation[], selectedConversation: null as string | null, messages: [] as PilotMessage[] });
 
 export default function PilotInbox({ conversations, selectedId, messages, onSelect, canSend = false, onSend, onPin }: {
   conversations: PilotConversation[]; selectedId: string | null; messages: PilotMessage[]; onSelect: (id: string) => void;

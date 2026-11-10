@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import PilotInbox, { emptyPilotInbox } from './PilotInbox';
+import PilotInbox from './PilotInbox';
+import { emptyPilotInbox } from './pilot-inbox-state';
 import PilotConnection from './PilotConnection';
 
 describe('pilot inbox', () => {

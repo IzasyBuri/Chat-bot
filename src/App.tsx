@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, BookOpen, Check, ChevronDown, CircleHelp, Clock3, Database, Inbox, LayoutDashboard, Menu, MessageCircle, MoreHorizontal, Plus, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, Users, WifiOff, X } from 'lucide-react';
-import type { AppData, Branch, Chat, FAQ, Label, Page, Sales } from './data';
+import type { AppData, Chat, Label, Page } from './data';
 import { sampleData } from './data';
 import { canBotReply, canManageConversation, canManageFaq, isExpired, nextFollowup } from './domain';
 import type { Role } from './domain';

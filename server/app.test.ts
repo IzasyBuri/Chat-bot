@@ -31,7 +31,7 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
   let b1 = '';
   let b2 = '';
   let otherSalesId = '';
-  let pilotSessionId = '511cd664-06b7-4915-a7d2-59ea0c21ca01';
+  const pilotSessionId = '511cd664-06b7-4915-a7d2-59ea0c21ca01';
 
   beforeAll(async () => {
     process.env.OPENWA_WEBHOOK_SECRET = 'test-secret-with-at-least-16-characters';

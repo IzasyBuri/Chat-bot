@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { BookOpen, Building2, CircleHelp, LayoutDashboard, LogOut, MessageCircle, Plus, ShieldCheck, Users, WifiOff, X } from 'lucide-react';
+import { Building2, CircleHelp, LayoutDashboard, LogOut, MessageCircle, Plus, ShieldCheck, Users, WifiOff, X } from 'lucide-react';
 import { ApiError, apiRequest } from './api';
-import { emptyPilotInbox, type PilotConversation, type PilotMessage } from './PilotInbox';
+import type { PilotConversation, PilotMessage } from './PilotInbox';
+import { emptyPilotInbox } from './pilot-inbox-state';
 import PilotWorkspace from './PilotWorkspace';
 
 type Role = 'super' | 'admin' | 'sales';
@@ -35,9 +36,9 @@ export default function SecureApp() {
   }, [selectedConversation]);
   useEffect(() => {
     if (!user || page !== 'Inbox') return;
-    void reloadInbox().catch(() => setError('Inbox tidak dapat dimuat.'));
+    const initial = setTimeout(() => void reloadInbox().catch(() => setError('Inbox tidak dapat dimuat.')), 0);
     const timer = setInterval(() => void reloadInbox().catch(() => setError('Inbox tidak dapat dimuat.')), 4000);
-    return () => clearInterval(timer);
+    return () => { clearTimeout(initial); clearInterval(timer); };
   }, [user, page, reloadInbox]);
 
   const refresh = useCallback(async () => {
