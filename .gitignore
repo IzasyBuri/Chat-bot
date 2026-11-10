@@ -17,3 +17,4 @@ dist/
 *.bak
 *.backup
 *.log
+.superpowers/
