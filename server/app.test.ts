@@ -261,10 +261,11 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     const cookie = String(login.headers['set-cookie']).split(';')[0];
     expect((await request('POST', '/api/wa/connect', cookie, { consent: false })).statusCode).toBe(400);
     expect((await request('POST', '/api/wa/connect', adminCookie, { consent: true })).statusCode).toBe(403);
-    process.env.OPENWA_WEBHOOK_URL = 'http://api:3001/api/hooks/openwa';
+    // webhookUrl is resolved once from RuntimeConfig when buildServer() ran in beforeAll,
+    // not re-read from process.env per request -- it stays the HTTPS value set there.
     const connected = await request('POST', '/api/wa/connect', cookie, { consent: true });
     expect(connected.statusCode).toBe(201);
-    expect(gateway.addWebhook).toHaveBeenCalledWith(connected.json().sessionId, process.env.OPENWA_WEBHOOK_URL, process.env.OPENWA_WEBHOOK_SECRET);
+    expect(gateway.addWebhook).toHaveBeenCalledWith(connected.json().sessionId, 'https://example.test/api/hooks/openwa', process.env.OPENWA_WEBHOOK_SECRET);
     const qr = await request('GET', '/api/wa/connection', cookie);
     expect(qr.json()).toMatchObject({ status: 'qr_ready', qrCode: 'data:image/png;base64,iVBORw0KGgo=', verified: false });
     vi.mocked(gateway.getSession).mockResolvedValueOnce({ id: connected.json().sessionId, status: 'ready', phone: '628000000000', engineLoaded: true });
@@ -274,7 +275,6 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     expect((await request('POST', '/api/wa/disconnect', cookie, {})).statusCode).toBe(204);
     const disconnected = await db.query('SELECT verified_at, verified_phone FROM wa_sessions WHERE sales_id = $1', [sales.json().user.id]);
     expect(disconnected.rows[0]).toEqual({ verified_at: null, verified_phone: null });
-    process.env.OPENWA_WEBHOOK_URL = 'https://example.test/api/hooks/openwa';
   });
 
   it('does not hold a database transaction while calling the gateway', async () => {

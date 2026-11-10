@@ -32,4 +32,8 @@ describe('runtime configuration', () => {
     expect(config.cookieSecure).toBe(false);
     expect(config.gatewayUrl).toBe('http://127.0.0.1:2785');
   });
+  it('carries the webhook URL through for routes that need it', () => {
+    expect(loadConfig({ OPENWA_WEBHOOK_URL: 'https://pilot.example/api/hooks/openwa' }).webhookUrl).toBe('https://pilot.example/api/hooks/openwa');
+    expect(loadConfig({}).webhookUrl).toBe('');
+  });
 });

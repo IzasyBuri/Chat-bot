@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import type { Actor } from './auth';
+import type { RuntimeConfig } from './config';
 import { OpenWaError, type GatewayClient } from './openwa-client';
 import { normalizeGatewayPhone, verifyOpenWaSignature, WEBHOOK_SECRET_MIN_LENGTH } from './openwa-contract';
 import { provisionSession } from './openwa-provisioning';
@@ -17,14 +18,14 @@ const event = z.object({
   }).passthrough().optional(),
 }).passthrough();
 
-export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor: (request: FastifyRequest, reply: FastifyReply) => Promise<Actor | null>, gateway: GatewayClient) {
+export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor: (request: FastifyRequest, reply: FastifyReply) => Promise<Actor | null>, gateway: GatewayClient, config: RuntimeConfig) {
   // A signed webhook is the sole cross-origin POST. Keep exact bytes for HMAC verification.
   await app.register(async hook => {
     hook.removeContentTypeParser('application/json');
     hook.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
     hook.post('/api/hooks/openwa', { bodyLimit: 1024 * 1024 }, async (request, reply) => {
       const raw = request.body;
-      if (!Buffer.isBuffer(raw) || !verifyOpenWaSignature(raw, request.headers['x-openwa-signature'] as string | undefined, process.env.OPENWA_WEBHOOK_SECRET)) {
+      if (!Buffer.isBuffer(raw) || !verifyOpenWaSignature(raw, request.headers['x-openwa-signature'] as string | undefined, config.webhookSecret)) {
         return reply.code(401).send({ error: 'Signature tidak valid.' });
       }
       let parsed: ReturnType<typeof event.safeParse>;
@@ -58,8 +59,7 @@ export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor
     const user = await actor(request, reply); if (!user) return;
     if (user.role !== 'sales') return reply.code(403).send({ error: 'Hanya pemilik nomor yang dapat menautkan sesi.' });
     if (!z.object({ consent: z.literal(true) }).strict().safeParse(request.body).success) return reply.code(400).send({ error: 'Persetujuan risiko nomor wajib diberikan.' });
-    const secret = process.env.OPENWA_WEBHOOK_SECRET;
-    const url = process.env.OPENWA_WEBHOOK_URL;
+    const { webhookSecret: secret, webhookUrl: url } = config;
     if (!secret || secret.length < WEBHOOK_SECRET_MIN_LENGTH || !url || !(url.startsWith('https://') || url === 'http://api:3001/api/hooks/openwa')) return reply.code(503).send({ error: 'Webhook OpenWA belum dikonfigurasi dengan aman.' });
     const result = await provisionSession(db, gateway, { salesId: user.id, webhookUrl: url, webhookSecret: secret });
     return reply.code(result.fresh ? 201 : 200).send({ sessionId: result.sessionId });

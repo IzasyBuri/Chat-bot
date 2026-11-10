@@ -6,6 +6,7 @@ export interface RuntimeConfig {
   cookieSecure: boolean;
   gatewayUrl: string;
   webhookSecret: string;
+  webhookUrl: string;
 }
 
 const splitOrigins = (value: string | undefined): string[] => (value ?? '').split(',').map(v => v.trim()).filter(Boolean);
@@ -15,6 +16,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   const appOrigins = splitOrigins(env.APP_ORIGIN);
   const cookieSecure = env.COOKIE_SECURE === 'true';
   const webhookSecret = env.OPENWA_WEBHOOK_SECRET ?? '';
+  const webhookUrl = env.OPENWA_WEBHOOK_URL ?? '';
   const gatewayUrl = env.OPENWA_URL || 'http://127.0.0.1:2785';
 
   if (isProduction) {
@@ -24,5 +26,5 @@ export function loadConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     if (webhookSecret.length < WEBHOOK_SECRET_MIN_LENGTH) throw new Error(`OPENWA_WEBHOOK_SECRET wajib minimal ${WEBHOOK_SECRET_MIN_LENGTH} karakter di produksi.`);
   }
 
-  return { isProduction, appOrigins: appOrigins.length ? appOrigins : ['http://localhost:5173'], cookieSecure, gatewayUrl, webhookSecret };
+  return { isProduction, appOrigins: appOrigins.length ? appOrigins : ['http://localhost:5173'], cookieSecure, gatewayUrl, webhookSecret, webhookUrl };
 }

@@ -28,10 +28,11 @@ const defaultLogger: FastifyLoggerOptions = { level: 'info' };
 
 export async function buildServer(
   db: Pool,
-  gateway: GatewayClient = new OpenWaClient(),
+  gateway?: GatewayClient,
   config: RuntimeConfig = loadConfig(process.env),
   logger: FastifyLoggerOptions | false = defaultLogger,
 ) {
+  gateway ??= new OpenWaClient(config.gatewayUrl);
   const cookieOptions = { path: '/api', httpOnly: true, sameSite: 'strict' as const, secure: config.cookieSecure, maxAge: 7 * 24 * 60 * 60 };
   const app = Fastify({ logger, bodyLimit: 32 * 1024 });
   await app.register(cookie);
@@ -140,6 +141,6 @@ export async function buildServer(
     await audit(user.id, 'user.update', targetId);
     return { user: result.rows[0] };
   });
-  await registerOpenWaRoutes(app, db, actor, gateway);
+  await registerOpenWaRoutes(app, db, actor, gateway, config);
   return app;
 }
