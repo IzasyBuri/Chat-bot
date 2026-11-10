@@ -1,4 +1,4 @@
-import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyLoggerOptions, type FastifyReply, type FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -21,9 +21,19 @@ const userPatch = z.object({ name: z.string().trim().min(1).max(120).optional(),
 const branchPatch = z.object({ name: z.string().trim().min(1).max(120).optional(), location: z.string().trim().max(200).optional(), persona: z.string().max(2000).optional() }).strict().refine(v => Object.keys(v).length > 0);
 const sessionCookie = 'ruang_session';
 
-export async function buildServer(db: Pool, gateway: GatewayClient = new OpenWaClient(), config: RuntimeConfig = loadConfig(process.env)) {
+// The default req/res serializers log only method, url, hostname, remote
+// address/port, status code, and response time: no headers (so no cookies or
+// API keys), and no body (so no passwords or message text).
+const defaultLogger: FastifyLoggerOptions = { level: 'info' };
+
+export async function buildServer(
+  db: Pool,
+  gateway: GatewayClient = new OpenWaClient(),
+  config: RuntimeConfig = loadConfig(process.env),
+  logger: FastifyLoggerOptions | false = defaultLogger,
+) {
   const cookieOptions = { path: '/api', httpOnly: true, sameSite: 'strict' as const, secure: config.cookieSecure, maxAge: 7 * 24 * 60 * 60 };
-  const app = Fastify({ logger: false, bodyLimit: 32 * 1024 });
+  const app = Fastify({ logger, bodyLimit: 32 * 1024 });
   await app.register(cookie);
   await app.register(helmet, { frameguard: { action: 'deny' } });
   await app.register(rateLimit, { global: true, max: 1000, timeWindow: '1 minute' });

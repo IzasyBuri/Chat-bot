@@ -8,6 +8,7 @@ import { hashPassword } from './auth';
 import { buildServer } from './app';
 import { OpenWaError, type GatewayClient } from './openwa-client';
 import { reapExpiredConversations } from './retention';
+import { reapExpiredSessions } from './auth';
 
 const url = process.env.TEST_DATABASE_URL;
 if (url && !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL harus menunjuk database _test, bukan data aplikasi.');
@@ -36,7 +37,7 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
   beforeAll(async () => {
     process.env.OPENWA_WEBHOOK_SECRET = 'test-secret-with-at-least-16-characters';
     process.env.OPENWA_WEBHOOK_URL = 'https://example.test/api/hooks/openwa';
-    app = await buildServer(db, gateway);
+    app = await buildServer(db, gateway, undefined, false);
     await db.query(await readFile(new URL('./migrations/001_initial.sql', import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('./migrations/002_pilot_inbox.sql', import.meta.url), 'utf8'));
     await db.query(await readFile(new URL('./migrations/003_outbound.sql', import.meta.url), 'utf8'));
@@ -359,9 +360,40 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     expect((await request('GET', `/api/conversations/${id}/messages`, cookie)).statusCode).toBe(404);
   });
 
+  it('reaps only expired sessions, leaving active ones usable', async () => {
+    const login = await pilotLogin('salesb@example.com', 'strong-password-777');
+    const activeCookie = String(login.headers['set-cookie']).split(';')[0];
+    const activeToken = activeCookie.split('=')[1];
+    await db.query("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (encode(sha256($1::bytea), 'hex'), (SELECT id FROM users WHERE email = 'salesb@example.com'), now() - interval '1 minute')", ['expired-token-fixture']);
+
+    expect(await reapExpiredSessions(db)).toBe(1);
+
+    expect((await request('GET', '/api/auth/me', activeCookie)).statusCode).toBe(200);
+    expect((await db.query("SELECT 1 FROM sessions WHERE token_hash = encode(sha256('expired-token-fixture'::bytea), 'hex')")).rowCount).toBe(0);
+    expect(activeToken).toBeTruthy();
+  });
+
   it('throttles repeated login attempts from the same client', async () => {
     const results = [];
     for (let attempt = 0; attempt < 12; attempt++) results.push((await request('POST', '/api/auth/login', '', { email: 'missing@example.com', password: 'incorrect' })).statusCode);
     expect(results).toContain(429);
+  });
+
+  it('logs request outcomes without passwords, cookies, API keys, phone numbers, or message bodies', async () => {
+    const lines: string[] = [];
+    const logApp = await buildServer(db, gateway, undefined, { stream: { write: (line: string) => { lines.push(line); } } });
+    await logApp.ready();
+    await logApp.inject({ method: 'POST', url: '/api/auth/login', headers: { origin: 'http://localhost:5173' }, payload: { email: 'root@example.com', password: 'wrong-but-logged-password' } });
+    await logApp.inject({
+      method: 'POST', url: '/api/hooks/openwa', headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ event: 'message.received', sessionId: pilotSessionId, data: { id: 'log-test', from: '628199999999@c.us', chatId: '628199999999@c.us', body: 'segredo do cliente', type: 'text', timestamp: Math.floor(Date.now() / 1000), fromMe: false, isGroup: false, kind: 'individual' } }),
+    });
+    await logApp.close();
+    const text = lines.join('\n');
+    expect(text).not.toContain('wrong-but-logged-password');
+    expect(text).not.toContain('segredo do cliente');
+    expect(text).not.toContain(process.env.OPENWA_WEBHOOK_SECRET);
+    expect(text).not.toContain('628199999999');
+    expect(text.length).toBeGreaterThan(0);
   });
 });

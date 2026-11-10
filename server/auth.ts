@@ -26,3 +26,7 @@ export async function destroySession(pool: Pool, token: string): Promise<void> {
   if (!token || token.length > 256) return;
   await pool.query('DELETE FROM sessions WHERE token_hash = $1', [hashToken(token)]);
 }
+export async function reapExpiredSessions(pool: Pool): Promise<number> {
+  const result = await pool.query('DELETE FROM sessions WHERE expires_at < now()');
+  return result.rowCount || 0;
+}
