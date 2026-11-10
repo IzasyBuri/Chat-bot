@@ -36,7 +36,7 @@ export async function registerOpenWaRoutes(app: FastifyInstance, db: Pool, actor
       const mapped = await db.query('SELECT w.session_id, w.verified_phone AS "verifiedPhone" FROM wa_sessions w JOIN users u ON u.id = w.sales_id WHERE w.session_id = $1 AND u.active AND u.role = \'sales\' AND w.verified_at IS NOT NULL', [sessionId]);
       if (!mapped.rowCount) return reply.code(404).send({ error: 'Sesi tidak terdaftar.' });
       if (parsed.data.event !== 'message.received' || !data || data.fromMe || data.isGroup || data.kind !== 'individual' || data.type !== 'text' || data.from !== data.chatId || !/^\d{5,15}@c\.us$/.test(data.chatId)) return { accepted: true, stored: false };
-      const destinationPhone = normalizeGatewayPhone(data.to || '');
+      const destinationPhone = data.to ? normalizeGatewayPhone(data.to) : mapped.rows[0].verifiedPhone;
       if (!destinationPhone || destinationPhone !== mapped.rows[0].verifiedPhone) {
         await db.query('UPDATE wa_sessions SET verified_at = NULL, verified_phone = NULL WHERE session_id = $1', [sessionId]);
         return { accepted: true, stored: false };

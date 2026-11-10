@@ -111,9 +111,13 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
   it('validates input and handles duplicate phone and email', async () => {
     expect((await request('POST', '/api/users', rootCookie, { name: '' })).statusCode).toBe(400);
     const data = { name: 'Sales One', email: 'sales1@example.com', password: 'strong-password-123', role: 'sales', branchId: b1, phone: '628111111111' };
-    expect((await request('POST', '/api/users', adminCookie, data)).statusCode).toBe(201);
+    const created = await request('POST', '/api/users', adminCookie, data);
+    expect(created.statusCode).toBe(201);
     expect((await request('POST', '/api/users', adminCookie, data)).statusCode).toBe(409);
     expect((await request('POST', '/api/users', adminCookie, { ...data, email: 'sales2@example.com' })).statusCode).toBe(409);
+    const updated = await request('PATCH', `/api/users/${created.json().user.id}`, adminCookie, { name: 'Sales Updated', phone: '628111111124' });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().user).toMatchObject({ name: 'Sales Updated', phone: '628111111124' });
   });
 
   it('rejects state changes from a foreign Origin', async () => {
@@ -186,6 +190,21 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     }
     const count = await db.query('SELECT count(*)::int AS count FROM messages');
     expect(count.rows[0].count).toBe(1);
+  });
+
+  it('accepts inbound messages when gateway omits destination phone', async () => {
+    const branch = await db.query("INSERT INTO branches (name) VALUES ('Missing Destination') RETURNING id");
+    const user = await db.query(
+      "INSERT INTO users (name, email, password_hash, role, branch_id, phone) VALUES ('Missing Destination Sales', 'missing-destination@example.com', $1, 'sales', $2, '628166666666') RETURNING id",
+      [await hashPassword('strong-missing-destination-password'), branch.rows[0].id],
+    );
+    const sessionId = '511cd664-06b7-4915-a7d2-59ea0c21ca03';
+    await db.query('INSERT INTO wa_sessions (session_id, sales_id, verified_at, verified_phone) VALUES ($1, $2, now(), $3)', [sessionId, user.rows[0].id, '628166666666']);
+    const response = await deliver(event({ ...inbound, id: 'missing-destination', to: undefined }, sessionId));
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ accepted: true, stored: true });
+    const message = await db.query('SELECT body FROM messages WHERE gateway_id = $1', ['missing-destination']);
+    expect(message.rows[0].body).toBe('Halo!');
   });
 
   it('drops a signed message for a different destination phone and clears stale verification', async () => {
