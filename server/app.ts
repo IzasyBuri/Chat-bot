@@ -1,9 +1,11 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
+import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { actorCanAccessBranch, canManageUser, createSession, destroySession, hashPassword, lookupSession, verifyPassword, type Actor, type Role } from './auth';
+import { loadConfig, type RuntimeConfig } from './config';
 import { registerOpenWaRoutes } from './openwa';
 import { OpenWaClient, type GatewayClient, OpenWaError } from './openwa-client';
 
@@ -18,11 +20,12 @@ const loginInput = z.object({ email: z.email().transform(v => v.trim().toLowerCa
 const userPatch = z.object({ name: z.string().trim().min(1).max(120).optional(), active: z.boolean().optional(), phone: z.string().regex(/^\d{10,15}$/).optional() }).strict().refine(v => Object.keys(v).length > 0);
 const branchPatch = z.object({ name: z.string().trim().min(1).max(120).optional(), location: z.string().trim().max(200).optional(), persona: z.string().max(2000).optional() }).strict().refine(v => Object.keys(v).length > 0);
 const sessionCookie = 'ruang_session';
-const cookieOptions = { path: '/api', httpOnly: true, sameSite: 'strict' as const, secure: process.env.COOKIE_SECURE === 'true', maxAge: 7 * 24 * 60 * 60 };
 
-export async function buildServer(db: Pool, gateway: GatewayClient = new OpenWaClient()) {
+export async function buildServer(db: Pool, gateway: GatewayClient = new OpenWaClient(), config: RuntimeConfig = loadConfig(process.env)) {
+  const cookieOptions = { path: '/api', httpOnly: true, sameSite: 'strict' as const, secure: config.cookieSecure, maxAge: 7 * 24 * 60 * 60 };
   const app = Fastify({ logger: false, bodyLimit: 32 * 1024 });
   await app.register(cookie);
+  await app.register(helmet, { frameguard: { action: 'deny' } });
   await app.register(rateLimit, { global: true, max: 1000, timeWindow: '1 minute' });
   app.setErrorHandler((error, _request, reply) => {
     const code = (error as { code?: string }).code;
@@ -35,10 +38,10 @@ export async function buildServer(db: Pool, gateway: GatewayClient = new OpenWaC
   });
   app.addHook('onRequest', async (request, reply) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(request.method) || (request.method === 'POST' && request.url === '/api/hooks/openwa')) return;
+    // Origin is compared only against the explicit allowlist: a client- or
+    // proxy-supplied Host header never authorizes a write, since either can be spoofed.
     const origin = request.headers.origin;
-    const allowed = process.env.APP_ORIGIN || 'http://localhost:5173';
-    const ownOrigin = `${request.protocol}://${request.headers.host}`;
-    if (!origin || (origin !== allowed && origin !== ownOrigin)) return reply.code(403).send({ error: 'Asal permintaan tidak diizinkan.' });
+    if (!origin || !config.appOrigins.includes(origin)) return reply.code(403).send({ error: 'Asal permintaan tidak diizinkan.' });
   });
   async function actor(request: FastifyRequest, reply: FastifyReply): Promise<Actor | null> {
     const value = request.cookies[sessionCookie];

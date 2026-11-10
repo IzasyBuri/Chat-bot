@@ -1,11 +1,12 @@
 import 'dotenv/config';
 import { pool } from './db';
 import { buildServer } from './app';
+import { loadConfig } from './config';
 import { reapExpiredConversations } from './retention';
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL wajib diisi.');
-if (process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE !== 'true') throw new Error('COOKIE_SECURE=true wajib di produksi dengan HTTPS.');
-const app = await buildServer(pool);
+const config = loadConfig(process.env);
+const app = await buildServer(pool, undefined, config);
 const retentionInterval = setInterval(() => { void reapExpiredConversations(pool).catch(() => console.error('Pembersihan retensi gagal.')); }, 60 * 60 * 1000);
 retentionInterval.unref();
 void reapExpiredConversations(pool).catch(() => console.error('Pembersihan retensi awal gagal.'));

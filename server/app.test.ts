@@ -118,6 +118,20 @@ describe.skipIf(!url)('PostgreSQL API integration', () => {
     expect(response.statusCode).toBe(403);
   });
 
+  it('rejects a foreign Origin even when a proxy-supplied Host header matches it', async () => {
+    const response = await request('POST', '/api/branches', rootCookie, { name: 'Forbidden' }, { origin: 'https://attacker.example', host: 'attacker.example' });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('serves baseline security headers on success, auth-error, and health responses', async () => {
+    for (const response of [await request('GET', '/api/health'), await request('GET', '/api/auth/me'), await request('GET', '/api/branches', rootCookie)]) {
+      expect(response.headers['content-security-policy']).toBeDefined();
+      expect(response.headers['x-content-type-options']).toBe('nosniff');
+      expect(response.headers['x-frame-options']).toBe('DENY');
+      expect(response.headers['referrer-policy']).toBeDefined();
+    }
+  });
+
   it('exposes administrative audit only to super admin', async () => {
     const log = await request('GET', '/api/audit', rootCookie);
     expect(log.statusCode).toBe(200);
